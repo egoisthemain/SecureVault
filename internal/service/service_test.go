@@ -57,11 +57,14 @@ func TestServiceCreateGet(t *testing.T) {
 
 	plaintext := []byte("hello my pass is 12345")
 
-	cipher, err := cryptography.New(make([]byte, 32))
+	keyring, err := cryptography.NewKeyring("test-key", map[string][]byte{
+		"test-key": make([]byte, 32),
+	})
 	if err != nil {
-		t.Fatalf("error of cipher creating: %v", err)
+		t.Fatalf("error of keyring creating: %v", err)
 	}
-	svc := New(store, cipher, "test-key")
+
+	svc := New(store, keyring)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -116,11 +119,14 @@ func TestServiceTamperedCiphertext(t *testing.T) {
 
 	plaintext := []byte("hello my pass is 12345")
 
-	cipher, err := cryptography.New(make([]byte, 32))
+	keyring, err := cryptography.NewKeyring("test-key", map[string][]byte{
+		"test-key": make([]byte, 32),
+	})
 	if err != nil {
-		t.Fatalf("error of cipher creating: %v", err)
+		t.Fatalf("error of keyring creating: %v", err)
 	}
-	svc := New(store, cipher, "test-key")
+
+	svc := New(store, keyring)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -154,13 +160,15 @@ func TestServiceGetUnknownKey(t *testing.T) {
 	}
 
 	plaintext := []byte("hello my pass is 12345")
-	KeyID := "test-key"
 
-	cipher, err := cryptography.New(make([]byte, 32))
+	keyring, err := cryptography.NewKeyring("test-key", map[string][]byte{
+		"test-key": make([]byte, 32),
+	})
 	if err != nil {
-		t.Fatalf("error of cipher creating: %v", err)
+		t.Fatalf("error of keyring creating: %v", err)
 	}
-	svc := New(store, cipher, KeyID)
+
+	svc := New(store, keyring)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -179,7 +187,7 @@ func TestServiceGetUnknownKey(t *testing.T) {
 	store.secrets[id] = secret
 
 	data, err := svc.Get(ctx, id)
-	if !errors.Is(err, ErrUnknownKey) {
+	if !errors.Is(err, cryptography.ErrUnknownKey) {
 		t.Fatalf("expected ErrUnknownKey, got: %v", err)
 	}
 
@@ -193,13 +201,14 @@ func TestServiceGetNotFound(t *testing.T) {
 		secrets: make(map[string]storage.Secret),
 	}
 
-	KeyID := "test-key"
-
-	cipher, err := cryptography.New(make([]byte, 32))
+	keyring, err := cryptography.NewKeyring("test-key", map[string][]byte{
+		"test-key": make([]byte, 32),
+	})
 	if err != nil {
-		t.Fatalf("error of cipher creating: %v", err)
+		t.Fatalf("error of keyring creating: %v", err)
 	}
-	svc := New(store, cipher, KeyID)
+
+	svc := New(store, keyring)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -222,17 +231,18 @@ func TestServiceCreateStorageError(t *testing.T) {
 	}
 
 	plaintext := []byte("hello my pass is 12345")
-	KeyID := "test-key"
 
-	cipher, err := cryptography.New(make([]byte, 32))
+	keyring, err := cryptography.NewKeyring("test-key", map[string][]byte{
+		"test-key": make([]byte, 32),
+	})
 	if err != nil {
-		t.Fatalf("error of cipher creating: %v", err)
+		t.Fatalf("error of keyring creating: %v", err)
 	}
+
+	svc := New(store, keyring)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	svc := New(store, cipher, KeyID)
 
 	id, err := svc.Create(ctx, plaintext)
 	if !errors.Is(err, wantErr) {
@@ -246,4 +256,72 @@ func TestServiceCreateStorageError(t *testing.T) {
 	if len(store.secrets) != 0 {
 		t.Fatalf("expected len(store.secrets) == 0, got: %v", len(store.secrets))
 	}
+}
+
+func TestServiceKeyRotation(t *testing.T) {
+	store := &memoryStore{
+		secrets: make(map[string]storage.Secret),
+	}
+
+	key1 := make([]byte, 32)
+	key2 := make([]byte, 32)
+	key2[0] = 1
+
+	keyring, err := cryptography.NewKeyring("key-v1", map[string][]byte{
+		"key-v1": key1,
+	})
+	if err != nil {
+		t.Fatalf("error of keyring creating: %v", err)
+	}
+
+	svc1 := New(store, keyring)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	oldID, err := svc1.Create(ctx, []byte("old-secret"))
+	if err != nil {
+		t.Fatalf("error of secret creating: %v", err)
+	}
+
+	keyring, err = cryptography.NewKeyring("key-v2", map[string][]byte{
+		"key-v1": key1,
+		"key-v2": key2,
+	})
+	if err != nil {
+		t.Fatalf("error of keyring creating: %v", err)
+	}
+
+	svc2 := New(store, keyring)
+	newID, err := svc2.Create(ctx, []byte("new-secret"))
+	if err != nil {
+		t.Fatalf("error of secret creating: %v", err)
+	}
+
+	if store.secrets[oldID].KeyID != "key-v1" {
+		t.Fatalf("expected key: %v for oldID, got: %v", "key-v1", store.secrets[oldID].KeyID)
+	}
+
+	if store.secrets[newID].KeyID != "key-v2" {
+		t.Fatalf("expected key: %v for newID, got: %v", "key-v2", store.secrets[newID].KeyID)
+	}
+
+	oldData, err := svc2.Get(ctx, oldID)
+	if err != nil {
+		t.Fatalf("error of oldData reading: %v", err)
+	}
+
+	newData, err := svc2.Get(ctx, newID)
+	if err != nil {
+		t.Fatalf("error of newData reading: %v", err)
+	}
+
+	if !bytes.Equal(oldData, []byte("old-secret")) {
+		t.Fatalf("expected data: %v, got: %v", "old-secret", string(oldData))
+	}
+
+	if !bytes.Equal(newData, []byte("new-secret")) {
+		t.Fatalf("expected data: %v, got: %v", "new-secret", string(newData))
+	}
+
 }

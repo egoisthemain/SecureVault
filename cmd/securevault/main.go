@@ -39,14 +39,14 @@ func run() error {
 
 	log.Print("database connection established")
 
-	cipher, err := cryptography.New(cfg.EncryptionKey)
+	keyring, err := cryptography.NewKeyring(cfg.KeyID, cfg.EncryptionKeys)
 	if err != nil {
 		return err
 	}
 
 	store := storage.NewPostgres(pool)
 
-	svc := service.New(store, cipher, cfg.KeyID)
+	svc := service.New(store, keyring)
 
 	handler := httpapi.New(svc)
 

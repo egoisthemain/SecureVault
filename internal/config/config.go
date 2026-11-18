@@ -2,16 +2,19 @@ package config
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
+
+	"github.com/egoisthemain/SecureVault/internal/cryptography"
 )
 
 type Config struct {
-	HTTPAddr      string
-	DatabaseURL   string
-	EncryptionKey []byte
-	KeyID         string
-	APIToken      string
+	HTTPAddr       string
+	DatabaseURL    string
+	EncryptionKeys map[string][]byte
+	KeyID          string
+	APIToken       string
 }
 
 func Load() (Config, error) {
@@ -30,18 +33,18 @@ func Load() (Config, error) {
 		return Config{}, errors.New("KEY_ID is required")
 	}
 
-	encKey := os.Getenv("ENCRYPTION_KEY")
-	if encKey == "" {
-		return Config{}, errors.New("ENCRYPTION_KEY is required")
+	encKeys := os.Getenv("ENCRYPTION_KEYS")
+	if encKeys == "" {
+		return Config{}, errors.New("ENCRYPTION_KEYS is required")
 	}
 
-	key, err := hex.DecodeString(encKey)
+	keys, err := parseEncryptionKeys(encKeys)
 	if err != nil {
-		return Config{}, errors.New("ENCRYPTION_KEY must be valid hex")
+		return Config{}, err
 	}
 
-	if len(key) != 32 {
-		return Config{}, errors.New("ENCRYPTION_KEY must decode to 32 bytes")
+	if _, ok := keys[keyID]; !ok {
+		return Config{}, errors.New("KEY_ID must reference an existing encryption key")
 	}
 
 	apiToken := os.Getenv("API_TOKEN")
@@ -50,10 +53,42 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:      addr,
-		DatabaseURL:   url,
-		KeyID:         keyID,
-		EncryptionKey: key,
-		APIToken:      apiToken,
+		HTTPAddr:       addr,
+		DatabaseURL:    url,
+		KeyID:          keyID,
+		EncryptionKeys: keys,
+		APIToken:       apiToken,
 	}, nil
+}
+
+func parseEncryptionKeys(raw string) (map[string][]byte, error) {
+	m := make(map[string]string)
+	err := json.Unmarshal([]byte(raw), &m)
+	if err != nil {
+		return nil, errors.New("ENCRYPTION_KEYS must be a JSON object with hex string values")
+	}
+	if len(m) == 0 {
+		return nil, errors.New("ENCRYPTION_KEYS must not be empty")
+	}
+
+	res := make(map[string][]byte)
+
+	for keyID, key := range m {
+		if keyID == "" {
+			return nil, cryptography.ErrInvalidKeyID
+		}
+
+		keyBytes, err := hex.DecodeString(key)
+		if err != nil {
+			return nil, errors.New("ENCRYPTION_KEY must be valid hex")
+		}
+
+		if len(keyBytes) != 32 {
+			return nil, cryptography.ErrInvalidKeyLength
+		}
+
+		res[keyID] = keyBytes
+	}
+
+	return res, nil
 }

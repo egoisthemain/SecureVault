@@ -2,25 +2,19 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/egoisthemain/SecureVault/internal/cryptography"
 	"github.com/egoisthemain/SecureVault/internal/storage"
 )
 
-var (
-	ErrUnknownKey = errors.New("unknown key")
-)
-
 type Service struct {
-	store  storage.Store
-	cipher *cryptography.Cipher
-	keyID  string
+	store   storage.Store
+	keyring *cryptography.Keyring
 }
 
-func New(store storage.Store, cipher *cryptography.Cipher, keyID string) *Service {
-	return &Service{store: store, cipher: cipher, keyID: keyID}
+func New(store storage.Store, keyring *cryptography.Keyring) *Service {
+	return &Service{store: store, keyring: keyring}
 }
 
 func (s *Service) Create(ctx context.Context, plaintext []byte) (string, error) {
@@ -29,7 +23,9 @@ func (s *Service) Create(ctx context.Context, plaintext []byte) (string, error) 
 		return "", err
 	}
 
-	encryptedData, err := s.cipher.Encrypt(plaintext)
+	keyID, cipher := s.keyring.Active()
+
+	encryptedData, err := cipher.Encrypt(plaintext)
 	if err != nil {
 		return "", err
 	}
@@ -38,7 +34,7 @@ func (s *Service) Create(ctx context.Context, plaintext []byte) (string, error) 
 		ID:         id,
 		Ciphertext: encryptedData.Ciphertext,
 		Nonce:      encryptedData.Nonce,
-		KeyID:      s.keyID,
+		KeyID:      keyID,
 		CreatedAt:  time.Now().UTC(),
 	}
 
@@ -56,8 +52,9 @@ func (s *Service) Get(ctx context.Context, id string) ([]byte, error) {
 		return nil, err
 	}
 
-	if secret.KeyID != s.keyID {
-		return nil, ErrUnknownKey
+	cipher, err := s.keyring.Get(secret.KeyID)
+	if err != nil {
+		return nil, err
 	}
 
 	encryptedData := cryptography.EncryptedData{
@@ -65,7 +62,7 @@ func (s *Service) Get(ctx context.Context, id string) ([]byte, error) {
 		Nonce:      secret.Nonce,
 	}
 
-	return s.cipher.Decrypt(&encryptedData)
+	return cipher.Decrypt(&encryptedData)
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
